@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
 import {
-  Brain, TrendingUp, Users, Clock, CheckSquare, Package, Home,
+  Brain, Users, Clock, CheckSquare, Package, Home,
   Plus, Trash2, ChevronRight, AlertCircle, Sparkles, BarChart3,
-  ArrowUpRight, ArrowDownRight, Minus
+  ArrowUpRight, ArrowDownRight, Minus, X, TrendingUp, Shield, CheckCircle, Archive
 } from 'lucide-react'
 
 const api = axios.create({
@@ -22,10 +22,16 @@ interface HappinessReport {
   dimensions: { people: DimensionScore; time: DimensionScore; tasks: DimensionScore; things: DimensionScore; spaces: DimensionScore }
   suggestions: { category: string; priority: string; title: string; description: string }[]
 }
+interface DecisionOption { name: string; pros: string[]; cons: string[] }
 interface Decision {
   id: string; title: string; description?: string
-  options: { name: string; pros: string[]; cons: string[] }[]
-  recommendation?: string; status: string; created_at: string
+  options: DecisionOption[]
+  recommendation?: string; status: string; created_at: string; updated_at: string
+}
+interface ScoredOption { name: string; score: number; pros_count: number; cons_count: number }
+interface DecisionAnalysis {
+  decision_id: string; best_option: string; reasoning: string
+  risk_level: string; options_scored: ScoredOption[]
 }
 
 function ScoreRing({ score, size = 80 }: { score: number; size?: number }) {
@@ -39,10 +45,23 @@ function ScoreRing({ score, size = 80 }: { score: number; size?: number }) {
       <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth="8"
         strokeDasharray={`${dash} ${circ}`} strokeLinecap="round" />
       <text x={size/2} y={size/2 + 1} textAnchor="middle" dominantBaseline="middle"
-        style={{ transform: 'rotate(90deg)', transformOrigin: `${size/2}px ${size/2}px`, fontSize: size * 0.22, fontWeight: 700, fill: '#111827' }}>
+        style={{ transform: `rotate(90deg)`, transformOrigin: `${size/2}px ${size/2}px`, fontSize: size * 0.22, fontWeight: 700, fill: '#111827' }}>
         {score.toFixed(0)}
       </text>
     </svg>
+  )
+}
+
+function ScoreBar({ score, label }: { score: number; label: string }) {
+  const color = score >= 80 ? '#22c55e' : score >= 60 ? '#eab308' : '#ef4444'
+  return (
+    <div className="flex items-center gap-3">
+      <div className="text-xs text-gray-500 w-16 shrink-0 text-right">{label}</div>
+      <div className="flex-1 bg-gray-100 rounded-full h-2">
+        <div className="h-2 rounded-full transition-all duration-500" style={{ width: `${score}%`, backgroundColor: color }} />
+      </div>
+      <div className="text-xs font-medium text-gray-700 w-8 shrink-0">{score.toFixed(0)}</div>
+    </div>
   )
 }
 
@@ -62,12 +81,195 @@ const DIM_ICONS: Record<string, React.ReactNode> = {
 
 type Tab = 'happiness' | 'decisions'
 
+function DecisionDetail({
+  decision,
+  onClose,
+  onStatusChange,
+}: {
+  decision: Decision
+  onClose: () => void
+  onStatusChange: (id: string, status: string) => void
+}) {
+  const [analysis, setAnalysis] = useState<DecisionAnalysis | null>(null)
+  const [loadingAnalysis, setLoadingAnalysis] = useState(false)
+  const [updatingStatus, setUpdatingStatus] = useState(false)
+
+  useEffect(() => {
+    setLoadingAnalysis(true)
+    api.get<DecisionAnalysis>(`/decisions/${decision.id}/analyze`)
+      .then(r => setAnalysis(r.data))
+      .catch(() => setAnalysis(null))
+      .finally(() => setLoadingAnalysis(false))
+  }, [decision.id])
+
+  const handleStatus = async (status: string) => {
+    setUpdatingStatus(true)
+    try {
+      await api.put(`/decisions/${decision.id}/status`, { status })
+      onStatusChange(decision.id, status)
+    } finally {
+      setUpdatingStatus(false)
+    }
+  }
+
+  const riskColor = (level: string) => {
+    if (level === 'high') return 'text-red-600 bg-red-50'
+    if (level === 'medium') return 'text-yellow-600 bg-yellow-50'
+    return 'text-green-600 bg-green-50'
+  }
+
+  const riskLabel = (level: string) => {
+    if (level === 'high') return '高风险'
+    if (level === 'medium') return '中等风险'
+    return '低风险'
+  }
+
+  const options: DecisionOption[] = Array.isArray(decision.options)
+    ? decision.options
+    : (() => { try { return JSON.parse(String(decision.options)) } catch { return [] } })()
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white border-b border-gray-100 px-6 py-4 flex items-start justify-between">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className={`text-xs px-2 py-0.5 rounded-full ${
+                decision.status === 'open' ? 'bg-blue-100 text-blue-700' :
+                decision.status === 'decided' ? 'bg-green-100 text-green-700' :
+                'bg-gray-100 text-gray-500'
+              }`}>{decision.status === 'open' ? '进行中' : decision.status === 'decided' ? '已决策' : '已归档'}</span>
+            </div>
+            <h2 className="text-lg font-bold text-gray-900">{decision.title}</h2>
+            {decision.description && <p className="text-sm text-gray-500 mt-0.5">{decision.description}</p>}
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 ml-4 shrink-0">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {loadingAnalysis ? (
+            <div className="text-center py-8 text-gray-400 text-sm">AI 分析中...</div>
+          ) : analysis && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 p-3 bg-primary-50 rounded-xl flex-1">
+                  <Sparkles className="w-5 h-5 text-primary-600 shrink-0" />
+                  <div>
+                    <div className="text-xs text-primary-600 font-medium">AI 推荐方案</div>
+                    <div className="text-base font-bold text-primary-900">{analysis.best_option}</div>
+                  </div>
+                </div>
+                <div className={`flex items-center gap-2 p-3 rounded-xl ${riskColor(analysis.risk_level)}`}>
+                  <Shield className="w-4 h-4 shrink-0" />
+                  <div>
+                    <div className="text-xs font-medium">风险等级</div>
+                    <div className="text-sm font-bold">{riskLabel(analysis.risk_level)}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-3 bg-gray-50 rounded-xl">
+                <div className="flex items-start gap-2">
+                  <TrendingUp className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
+                  <p className="text-sm text-gray-600">{analysis.reasoning}</p>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-semibold text-gray-700 mb-3">方案评分对比</h3>
+                <div className="space-y-2">
+                  {analysis.options_scored.map(opt => (
+                    <div key={opt.name} className={`p-3 rounded-xl border ${opt.name === analysis.best_option ? 'border-primary-200 bg-primary-50' : 'border-gray-100 bg-gray-50'}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          {opt.name === analysis.best_option && <Sparkles className="w-3.5 h-3.5 text-primary-500" />}
+                          <span className="text-sm font-medium text-gray-900">{opt.name}</span>
+                        </div>
+                        <span className={`text-sm font-bold ${opt.name === analysis.best_option ? 'text-primary-700' : 'text-gray-600'}`}>{opt.score.toFixed(0)} 分</span>
+                      </div>
+                      <div className="w-full bg-white rounded-full h-1.5">
+                        <div className="h-1.5 rounded-full transition-all" style={{ width: `${opt.score}%`, backgroundColor: opt.name === analysis.best_option ? '#9333ea' : '#9ca3af' }} />
+                      </div>
+                      <div className="flex gap-3 mt-2">
+                        <span className="text-xs text-green-600">✓ {opt.pros_count} 个优点</span>
+                        <span className="text-xs text-red-500">✗ {opt.cons_count} 个缺点</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">备选方案详情</h3>
+            <div className="space-y-3">
+              {options.map(opt => (
+                <div key={opt.name} className={`p-4 rounded-xl border ${decision.recommendation === opt.name ? 'border-primary-200' : 'border-gray-100'}`}>
+                  <div className="flex items-center gap-2 mb-3">
+                    {decision.recommendation === opt.name && <Sparkles className="w-3.5 h-3.5 text-primary-500" />}
+                    <span className="font-medium text-gray-900">{opt.name}</span>
+                    {decision.recommendation === opt.name && <span className="text-xs bg-primary-100 text-primary-700 px-2 py-0.5 rounded-full">推荐</span>}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {opt.pros.length > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-green-700 mb-1.5">优点</div>
+                        <ul className="space-y-1">
+                          {opt.pros.map((p, i) => (
+                            <li key={i} className="flex items-start gap-1.5 text-xs text-gray-600">
+                              <span className="text-green-500 mt-0.5 shrink-0">✓</span>{p}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {opt.cons.length > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-red-600 mb-1.5">缺点</div>
+                        <ul className="space-y-1">
+                          {opt.cons.map((c, i) => (
+                            <li key={i} className="flex items-start gap-1.5 text-xs text-gray-600">
+                              <span className="text-red-400 mt-0.5 shrink-0">✗</span>{c}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {decision.status === 'open' && (
+            <div className="flex gap-2 pt-2 border-t border-gray-100">
+              <button onClick={() => handleStatus('decided')} disabled={updatingStatus}
+                className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors disabled:opacity-50">
+                <CheckCircle className="w-4 h-4" />标记已决策
+              </button>
+              <button onClick={() => handleStatus('archived')} disabled={updatingStatus}
+                className="flex items-center gap-1.5 px-4 py-2 bg-white text-gray-600 border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50">
+                <Archive className="w-4 h-4" />归档
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('happiness')
   const [report, setReport] = useState<HappinessReport | null>(null)
-  const [decisions, setDecisions] = useState<Decision[]>([])
+  const [decisions, setDecisions] = useState<Decision[]>([]
+  )
   const [loading, setLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
+  const [selectedDecision, setSelectedDecision] = useState<Decision | null>(null)
   const [newDecision, setNewDecision] = useState({ title: '', description: '', options: [{ name: '', pros: '', cons: '' }] })
 
   const token = localStorage.getItem('access_token')
@@ -111,6 +313,13 @@ export default function App() {
     fetchDecisions()
   }
 
+  const handleStatusChange = (id: string, status: string) => {
+    setDecisions(prev => prev.map(d => d.id === id ? { ...d, status } : d))
+    if (selectedDecision?.id === id) {
+      setSelectedDecision(prev => prev ? { ...prev, status } : null)
+    }
+  }
+
   if (!authed) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -124,6 +333,8 @@ export default function App() {
       </div>
     )
   }
+
+  const dimEntries = report ? Object.entries(report.dimensions) : []
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -156,18 +367,26 @@ export default function App() {
             <div className="space-y-6">
               <div className="card flex items-center gap-6">
                 <ScoreRing score={report.total_score} size={100} />
-                <div>
-                  <div className="text-sm text-gray-500">家庭幸福指数</div>
-                  <div className="text-3xl font-bold text-gray-900">{report.total_score}</div>
+                <div className="flex-1">
+                  <div className="text-sm text-gray-500 mb-1">家庭幸福指数</div>
+                  <div className="text-4xl font-bold text-gray-900">{report.total_score}</div>
                   <div className="flex items-center gap-1 mt-1">
                     <TrendIcon trend={report.trend} />
                     <span className="text-sm text-gray-500">趋势{report.trend}</span>
                   </div>
                 </div>
+                <div className="hidden sm:block flex-1">
+                  <div className="text-xs text-gray-500 mb-2 font-medium">维度分布</div>
+                  <div className="space-y-1.5">
+                    {dimEntries.map(([key, dim]) => (
+                      <ScoreBar key={key} score={dim.score} label={dim.label} />
+                    ))}
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {Object.entries(report.dimensions).map(([key, dim]) => (
+                {dimEntries.map(([key, dim]) => (
                   <div key={key} className="card">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2 text-gray-500 text-sm">
@@ -222,7 +441,10 @@ export default function App() {
         {tab === 'decisions' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-gray-900">决策列表</h2>
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">决策列表</h2>
+                <p className="text-xs text-gray-400 mt-0.5">点击决策卡片查看 AI 分析详情</p>
+              </div>
               <button onClick={() => setShowCreate(true)} className="btn-primary flex items-center gap-1">
                 <Plus className="w-4 h-4" />新建决策
               </button>
@@ -286,43 +508,53 @@ export default function App() {
                 <p className="text-gray-500">暂无决策记录</p>
                 <p className="text-xs text-gray-400 mt-1">创建一个决策，让 JiaBu 为你分析最优方案</p>
               </div>
-            ) : decisions.map(d => (
-              <div key={d.id} className="card">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        d.status === 'open' ? 'bg-blue-100 text-blue-700' :
-                        d.status === 'decided' ? 'bg-green-100 text-green-700' :
-                        'bg-gray-100 text-gray-500'
-                      }`}>{d.status === 'open' ? '进行中' : d.status === 'decided' ? '已决策' : '已归档'}</span>
-                      <h3 className="font-semibold text-gray-900 text-sm truncate">{d.title}</h3>
-                    </div>
-                    {d.description && <p className="text-xs text-gray-500 mb-2">{d.description}</p>}
-                    <div className="flex flex-wrap gap-2">
-                      {d.options?.map((opt: {name:string}) => (
-                        <span key={opt.name} className={`text-xs px-2 py-0.5 rounded-full border ${
-                          d.recommendation === opt.name ? 'border-primary-300 bg-primary-50 text-primary-700 font-medium' : 'border-gray-200 text-gray-500'
-                        }`}>
-                          {d.recommendation === opt.name && <Sparkles className="w-3 h-3 inline mr-0.5" />}
-                          {opt.name}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-gray-300 shrink-0 mt-1" />
-                </div>
-                {d.recommendation && (
-                  <div className="mt-3 p-2 bg-primary-50 rounded-lg flex items-center gap-2">
-                    <AlertCircle className="w-3.5 h-3.5 text-primary-600 shrink-0" />
-                    <span className="text-xs text-primary-700">推荐方案：<strong>{d.recommendation}</strong></span>
-                  </div>
-                )}
-                <div className="mt-3 text-xs text-gray-400">
-                  {new Date(d.created_at).toLocaleDateString('zh-CN')}
-                </div>
+            ) : (
+              <div className="space-y-3">
+                {decisions.map(d => {
+                  const opts: DecisionOption[] = Array.isArray(d.options)
+                    ? d.options
+                    : (() => { try { return JSON.parse(String(d.options)) } catch { return [] } })()
+                  return (
+                    <button key={d.id} onClick={() => setSelectedDecision(d)}
+                      className="card w-full text-left hover:border-primary-200 hover:shadow-md transition-all cursor-pointer">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                              d.status === 'open' ? 'bg-blue-100 text-blue-700' :
+                              d.status === 'decided' ? 'bg-green-100 text-green-700' :
+                              'bg-gray-100 text-gray-500'
+                            }`}>{d.status === 'open' ? '进行中' : d.status === 'decided' ? '已决策' : '已归档'}</span>
+                            <h3 className="font-semibold text-gray-900 text-sm truncate">{d.title}</h3>
+                          </div>
+                          {d.description && <p className="text-xs text-gray-500 mb-2">{d.description}</p>}
+                          <div className="flex flex-wrap gap-2">
+                            {opts.map((opt) => (
+                              <span key={opt.name} className={`text-xs px-2 py-0.5 rounded-full border ${
+                                d.recommendation === opt.name ? 'border-primary-300 bg-primary-50 text-primary-700 font-medium' : 'border-gray-200 text-gray-500'
+                              }`}>
+                                {d.recommendation === opt.name && <Sparkles className="w-3 h-3 inline mr-0.5" />}
+                                {opt.name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-gray-300 shrink-0 mt-1" />
+                      </div>
+                      {d.recommendation && (
+                        <div className="mt-3 p-2 bg-primary-50 rounded-lg flex items-center gap-2">
+                          <AlertCircle className="w-3.5 h-3.5 text-primary-600 shrink-0" />
+                          <span className="text-xs text-primary-700">推荐方案：<strong>{d.recommendation}</strong></span>
+                        </div>
+                      )}
+                      <div className="mt-3 text-xs text-gray-400">
+                        {new Date(d.created_at).toLocaleDateString('zh-CN')}
+                      </div>
+                    </button>
+                  )
+                })}
               </div>
-            ))}
+            )}
           </div>
         )}
       </main>
@@ -330,6 +562,14 @@ export default function App() {
       <footer className="text-center text-xs text-gray-400 py-6 border-t border-gray-200 mt-8">
         <p>JiaBu 决策助手 · <a href="https://hamr.store" className="hover:text-gray-600">HamR 家庭智能助理</a></p>
       </footer>
+
+      {selectedDecision && (
+        <DecisionDetail
+          decision={selectedDecision}
+          onClose={() => setSelectedDecision(null)}
+          onStatusChange={handleStatusChange}
+        />
+      )}
     </div>
   )
 }

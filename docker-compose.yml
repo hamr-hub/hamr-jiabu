@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hamr_jiabu
+      POSTGRES_USER: hamr
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hamr -d hamr_jiabu"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://hamr:${DB_PASSWORD:-changeme}@db:5432/hamr_jiabu
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      PORT: 3003
+      RUST_LOG: info
+    ports:
+      - "3003:3003"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${API_URL:-http://localhost:3003}
+    ports:
+      - "3020:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
