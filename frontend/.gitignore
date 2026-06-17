@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Antigravity CLI and Scratch
+.gemini/
+scratch/
