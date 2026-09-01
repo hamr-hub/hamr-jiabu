@@ -98,7 +98,7 @@ fn score_people(count: i64, interactions: i64) -> DimensionScore {
     let base = if count == 0 { 40.0 } else { 60.0 + (count.min(5) as f64) * 6.0 };
     let bonus = (interactions.min(10) as f64) * 2.0;
     DimensionScore {
-        score: (base + bonus).min(100.0),
+        score: (base + bonus).clamp(0.0, 100.0),
         label: "人际关系".to_string(),
         trend: if interactions > 5 { "上升" } else { "平稳" }.to_string(),
         note: format!("家庭成员 {} 人，近期互动 {} 次", count, interactions),
@@ -109,7 +109,7 @@ fn score_time(events: i64, overdue: i64) -> DimensionScore {
     let base = if events == 0 { 50.0 } else { 70.0 + (events.min(10) as f64) * 2.0 };
     let penalty = (overdue as f64) * 8.0;
     DimensionScore {
-        score: (base - penalty).max(0.0).min(100.0),
+        score: (base - penalty).clamp(0.0, 100.0),
         label: "时间管理".to_string(),
         trend: if overdue > 0 { "下降" } else { "平稳" }.to_string(),
         note: format!("共 {} 个事件，其中 {} 个已逾期", events, overdue),
@@ -131,7 +131,7 @@ fn score_things(count: i64, expiring: i64) -> DimensionScore {
     let base = if count == 0 { 60.0 } else { 75.0 + (count.min(20) as f64) * 1.0 };
     let penalty = (expiring as f64) * 5.0;
     DimensionScore {
-        score: (base - penalty).max(0.0).min(100.0),
+        score: (base - penalty).clamp(0.0, 100.0),
         label: "物品管理".to_string(),
         trend: if expiring > 0 { "下降" } else { "平稳" }.to_string(),
         note: format!("登记物品 {} 件，{} 件即将过期", count, expiring),

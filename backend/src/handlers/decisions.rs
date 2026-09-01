@@ -17,7 +17,7 @@ use crate::{
 const SHARE_SCOPES: &[&str] = &["private", "family", "friends", "public", "ai_training"];
 
 fn is_valid_share_scope(scope: &str) -> bool {
-    SHARE_SCOPES.iter().any(|s| *s == scope)
+    SHARE_SCOPES.contains(&scope)
 }
 
 pub async fn list_decisions(
@@ -95,8 +95,7 @@ pub async fn analyze_decision(
             };
             let cost_penalty = o.cost.unwrap_or(0.0) / 1000.0 * 5.0;
             let score = (pros * 20.0 - cons * 10.0 - effort_penalty - cost_penalty)
-                .max(0.0)
-                .min(100.0);
+                .clamp(0.0, 100.0);
             ScoredOption {
                 name: o.name.clone(),
                 score,

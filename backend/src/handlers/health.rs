@@ -2,7 +2,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-use crate::{db::AppState, errors::AppError};
+use crate::db::AppState;
 
 /// How long /readyz is willing to wait on the DB before declaring the service
 /// not-ready. Kept short on purpose — readiness probes are called frequently
@@ -100,9 +100,4 @@ mod tests {
         assert!(is_app_error_status(StatusCode::SERVICE_UNAVAILABLE));
         assert!(!is_app_error_status(StatusCode::OK));
     }
-
-    // The AppError re-export makes the unused-import lint happy when tests
-    // are the only consumer of the crate's error module in this file.
-    #[allow(dead_code)]
-    fn _ensure_apperror_in_scope(_: AppError) {}
 }

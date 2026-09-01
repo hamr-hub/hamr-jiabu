@@ -11,6 +11,7 @@ pub struct Claims {
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[allow(dead_code)] // Will be used by /api/v1/happiness/score GET in a future round.
 pub struct HappinessScore {
     pub id: Uuid,
     pub family_id: Uuid,
