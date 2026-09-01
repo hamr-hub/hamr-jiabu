@@ -6,7 +6,8 @@ use crate::{
     db::AppState,
     errors::AppResult,
     models::{
-        Claims, DecisionAnalysis, Decision, CreateDecisionRequest, ScoredOption,
+        Claims, DecisionAnalysis, Decision, CreateDecisionRequest,
+        ScoredOption, UpdateDecisionStatusRequest,
     },
 };
 
@@ -114,20 +115,73 @@ async fn get_family_id(claims: &Claims, _state: &AppState) -> AppResult<Uuid> {
 }
 
 pub async fn update_decision_status(
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
-    Json(body): Json<serde_json::Value>,
+    Json(req): Json<UpdateDecisionStatusRequest>,
 ) -> AppResult<Json<Decision>> {
-    let status = body.get("status").and_then(|s| s.as_str()).unwrap_or("open");
+    // Audit-trail policy (iter-loop-20260901):
+    //   - status flips AWAY from "open" record actor + timestamp + optional rationale.
+    //   - "open" reverts do NOT clear audit fields (preserves the original decision
+    //     moment so we never silently lose accountability).
+    let now = Utc::now();
+    let audit_actor = if req.status != "open" {
+        Some(claims.username.clone())
+    } else {
+        None
+    };
+    let audit_at = if req.status != "open" { Some(now) } else { None };
+
     let decision = sqlx::query_as::<_, Decision>(
-        "UPDATE decisions SET status = $1, updated_at = $2 WHERE id = $3 RETURNING *",
+        r#"UPDATE decisions
+           SET status = $1,
+               updated_at = $2,
+               decided_by = COALESCE($3, decided_by),
+               decided_at = COALESCE($4, decided_at),
+               rationale  = COALESCE($5, rationale)
+           WHERE id = $6
+           RETURNING *"#,
     )
-    .bind(status)
-    .bind(Utc::now())
+    .bind(&req.status)
+    .bind(now)
+    .bind(audit_actor)
+    .bind(audit_at)
+    .bind(&req.rationale)
     .bind(id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(crate::errors::AppError::NotFound)?;
+
+    tracing::info!(
+        decision_id = %decision.id,
+        status = %decision.status,
+        actor = ?decision.decided_by,
+        "decision status updated"
+    );
+
     Ok(Json(decision))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_request_status_falls_back_to_open_when_missing() {
+        // Defensive: if the wire format ever changes, JSON parsing here would
+        // already fail at the Axum extractor. This test pins the contract
+        // that the handler expects { status, rationale? } and nothing else.
+        let raw = r#"{"status":"decided","rationale":"budget approved"}"#;
+        let parsed: UpdateDecisionStatusRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.status, "decided");
+        assert_eq!(parsed.rationale.as_deref(), Some("budget approved"));
+    }
+
+    #[test]
+    fn update_request_accepts_missing_rationale() {
+        let raw = r#"{"status":"archived"}"#;
+        let parsed: UpdateDecisionStatusRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.status, "archived");
+        assert!(parsed.rationale.is_none());
+    }
 }

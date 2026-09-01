@@ -69,6 +69,17 @@ pub struct Decision {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // Audit trail (iter-loop-20260901) — populated when status flips
+    // away from "open". Nullable so existing rows remain valid post-migration.
+    pub decided_by: Option<String>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub rationale: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateDecisionStatusRequest {
+    pub status: String,
+    pub rationale: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
