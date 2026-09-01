@@ -1,0 +1,65 @@
+# GitHub Actions CI for hamr-jiabu (iter-loop-20260901 r4)
+#
+# Three steps only on purpose:
+#   1. cargo check --all-targets  — fast type-check, catches API drift
+#   2. cargo test --all-targets   — full unit suite (handler-shape tests, no DB)
+#   3. cargo clippy --all-targets -- -D warnings  — strict lints; any new warning
+#      promoted to error blocks the build.
+#
+# Deliberately omitted:
+#   - `cargo fmt --check` — formatting is enforced separately (and the existing
+#     code has not yet been rustfmt'd wholesale; flipping this on would mask
+#     real signal with cosmetic noise).
+#   - `cargo sqlx prepare` / `cargo sqlx prepare-check` — the codebase uses
+#     runtime `sqlx::query_as` / `sqlx::query_scalar` everywhere, NOT the
+#     compile-time `sqlx::query!` macro. There is no `.sqlx/` cache to verify.
+#   - DB-backed integration tests — `cargo test` here runs the pure unit suite
+#     only; integration tests would need a live Postgres which is out of scope
+#     for this round (constraint: do not connect to real services).
+#
+# env vars: the workflow deliberately leaves APP_ENV unset so Config::load
+# takes the dev branch. Production fail-fast is exercised by unit tests, not
+# by the CI matrix.
+
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - iter-loop-20260901
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  backend:
+    name: backend (check + test + clippy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend -> target
+
+      - name: cargo check --all-targets
+        run: cargo check --all-targets --locked
+
+      - name: cargo test --all-targets
+        run: cargo test --all-targets --locked
+
+      - name: cargo clippy --all-targets (warnings denied)
+        run: cargo clippy --all-targets --locked -- -D warnings
