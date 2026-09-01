@@ -6,7 +6,7 @@ use axum::{
 use serde_json::json;
 use crate::{
     db::AppState,
-    handlers::{decisions, happiness},
+    handlers::{decisions, happiness, health},
     middleware::auth_middleware,
 };
 
@@ -23,6 +23,10 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health_check))
+        // /readyz is intentionally NOT behind auth — k8s / load-balancer
+        // probes won't carry a JWT and we want them to fail-open on DB
+        // health, not on auth.
+        .route("/readyz", get(health::readyz))
         .merge(protected)
         .with_state(state)
 }
