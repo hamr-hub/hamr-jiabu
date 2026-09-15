@@ -8,6 +8,8 @@ pub enum AppError {
     Unauthorized,
     #[error("Not found")]
     NotFound,
+    #[error("Bad request: {0}")]
+    BadRequest(String),
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -17,6 +19,7 @@ impl IntoResponse for AppError {
         let (status, msg) = match &self {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found"),
+            AppError::BadRequest(detail) => (StatusCode::BAD_REQUEST, detail.as_str()),
             AppError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
         };
         (status, Json(json!({ "error": msg }))).into_response()

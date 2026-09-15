@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod errors;
 mod handlers;
+mod metrics;
 mod middleware;
 mod models;
 mod routes;
@@ -27,7 +28,12 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // iter-loop-20260901 r5: HTTP request metrics wrap the WHOLE router
+    // (including /metrics itself) so we capture scrape traffic too. Order
+    // matters: this layer must be OUTSIDE TraceLayer so a panic in metrics
+    // can't bypass observability.
     let app = routes::build_router(state)
+        .layer(axum::middleware::from_fn(metrics::http_metrics_middleware))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
