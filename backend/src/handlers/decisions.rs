@@ -1,10 +1,13 @@
 use axum::{extract::State, Extension, Json};
 use chrono::{DateTime, Duration, Utc};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
     db::AppState,
     errors::{AppError, AppResult},
+    handlers::audit,
+    metrics,
     models::{
         Claims, CreateDecisionRequest, Decision, DecisionAnalysis, PurgeExpiredResponse,
         ScoredOption, ShareDecisionRequest, UpdateDecisionStatusRequest,
@@ -65,6 +68,33 @@ pub async fn create_decision(
     .bind(&recommendation)
     .fetch_one(&state.db)
     .await?;
+
+    // iter-loop-20260901 r5: persist the create event into the audit log
+    // AND bump the decisions counter. The audit insert is best-effort: a
+    // failure here would surface as 500, but a missing audit row is worse
+    // than a missing metric, so we let it propagate (audit gaps are exactly
+    // what compliance asks us to explain).
+    if let Err(e) = audit::record_audit(
+        &state.db,
+        &claims.username,
+        "decision_created",
+        Some(decision.id),
+        Some(family_id),
+        json!({
+            "title": decision.title,
+            "options_count": req.options.len(),
+            "recommendation": recommendation,
+        }),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, decision_id = %decision.id, "audit_log insert failed for decision_created");
+        return Err(e);
+    }
+
+    let mut labels = std::collections::BTreeMap::new();
+    labels.insert("action".to_string(), "created".to_string());
+    metrics::counter_inc("decisions_total", labels);
 
     Ok(Json(decision))
 }
@@ -148,6 +178,18 @@ pub async fn update_decision_status(
     };
     let audit_at = if req.status != "open" { Some(now) } else { None };
 
+    // Read the existing row first so we know the OLD status (needed for the
+    // audit metadata). The subsequent UPDATE is conditional on the same id,
+    // so a concurrent flip from another caller could change the "old" value
+    // we record; that's accepted as best-effort ordering for r5.
+    let previous_status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM decisions WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+    let previous_status = previous_status.ok_or(crate::errors::AppError::NotFound)?;
+
     let decision = sqlx::query_as::<_, Decision>(
         r#"UPDATE decisions
            SET status = $1,
@@ -174,6 +216,31 @@ pub async fn update_decision_status(
         actor = ?decision.decided_by,
         "decision status updated"
     );
+
+    // iter-loop-20260901 r5: persist every status flip (open -> decided /
+    // archived, and open reverts) into the audit log so security can answer
+    // "who moved this and when" without grepping tracing output.
+    if let Err(e) = audit::record_audit(
+        &state.db,
+        &claims.username,
+        "decision_status_updated",
+        Some(decision.id),
+        Some(decision.family_id),
+        json!({
+            "old_status": previous_status,
+            "new_status": decision.status,
+            "rationale": decision.rationale,
+        }),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, decision_id = %decision.id, "audit_log insert failed for decision_status_updated");
+        return Err(e);
+    }
+
+    let mut labels = std::collections::BTreeMap::new();
+    labels.insert("action".to_string(), "status_updated".to_string());
+    metrics::counter_inc("decisions_total", labels);
 
     Ok(Json(decision))
 }
@@ -214,6 +281,17 @@ pub async fn share_decision(
     let is_private = req.share_scope == "private";
     let expires_at: Option<DateTime<Utc>> = req.ttl_days.map(|d| now + Duration::days(d as i64));
 
+    // Snapshot the prior share_scope so the audit row records the transition
+    // (e.g. family -> public) rather than just the resulting state.
+    let prior_scope: Option<String> = sqlx::query_scalar(
+        "SELECT share_scope FROM decisions WHERE id = $1 AND family_id = $2",
+    )
+    .bind(id)
+    .bind(family_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
     let decision = sqlx::query_as::<_, Decision>(
         r#"UPDATE decisions
            SET is_private  = $1,
@@ -244,6 +322,35 @@ pub async fn share_decision(
         "decision share scope updated"
     );
 
+    // iter-loop-20260901 r5: persist the share-scope transition so audits
+    // can answer "who promoted this to public" without scraping logs.
+    if let Err(e) = audit::record_audit(
+        &state.db,
+        &claims.username,
+        "decision_shared",
+        Some(decision.id),
+        Some(decision.family_id),
+        json!({
+            "old_share_scope": prior_scope,
+            "new_share_scope": decision.share_scope,
+            "ttl_days": decision.ttl_days,
+            "expires_at": decision.expires_at,
+        }),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, decision_id = %decision.id, "audit_log insert failed for decision_shared");
+        return Err(e);
+    }
+
+    let mut dlabels = std::collections::BTreeMap::new();
+    dlabels.insert("action".to_string(), "shared".to_string());
+    metrics::counter_inc("decisions_total", dlabels);
+
+    let mut slabels = std::collections::BTreeMap::new();
+    slabels.insert("scope".to_string(), decision.share_scope.clone());
+    metrics::counter_inc("privacy_share_total", slabels);
+
     Ok(Json(decision))
 }
 
@@ -253,7 +360,7 @@ pub async fn share_decision(
 ///
 /// Safe to call repeatedly: rows without an expires_at are never touched.
 pub async fn delete_expired_decisions(
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     State(state): State<AppState>,
 ) -> AppResult<Json<PurgeExpiredResponse>> {
     // sqlx maps Postgres BIGINT to i64 (not u64), so we fetch as i64 and
@@ -270,6 +377,29 @@ pub async fn delete_expired_decisions(
     .await?;
 
     tracing::info!(purged = purged, "expired decisions purged");
+
+    // iter-loop-20260901 r5: audit-log every purge run. We log once per run
+    // (not once per row) because purge is bulk — per-row would balloon the
+    // table when an admin runs the endpoint across all families. The count
+    // lives in metadata so dashboards can still chart purge volume.
+    if let Err(e) = audit::record_audit(
+        &state.db,
+        &claims.username,
+        "decision_purged",
+        None,
+        None,
+        json!({ "purged_count": purged.max(0) }),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "audit_log insert failed for decision_purged");
+        return Err(e);
+    }
+
+    let mut labels = std::collections::BTreeMap::new();
+    labels.insert("action".to_string(), "purged".to_string());
+    metrics::counter_inc("decisions_total", labels);
+
     Ok(Json(PurgeExpiredResponse {
         purged: purged.max(0) as u64,
     }))

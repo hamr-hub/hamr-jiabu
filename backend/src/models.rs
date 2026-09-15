@@ -11,7 +11,7 @@ pub struct Claims {
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
-#[allow(dead_code)] // Will be used by /api/v1/happiness/score GET in a future round.
+#[allow(dead_code)] // Some dimension fields are reserved for future report shape.
 pub struct HappinessScore {
     pub id: Uuid,
     pub family_id: Uuid,
@@ -22,6 +22,23 @@ pub struct HappinessScore {
     pub score_spaces: f64,
     pub total_score: f64,
     pub computed_at: DateTime<Utc>,
+}
+
+/// `GET /api/v1/happiness/score` response. Wraps a historical point so the
+/// client can render a trend chart without further trips.
+///
+/// `points` is ordered ASCENDING by `computed_at` — the frontend draws
+/// left-to-right and that matches the natural time direction. `delta` is
+/// pre-computed server-side (last - first) so the client doesn't have to
+/// worry about empty series.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HappinessScoreHistory {
+    pub family_id: Uuid,
+    pub point_count: usize,
+    pub latest_total: Option<f64>,
+    pub earliest_total: Option<f64>,
+    pub delta: Option<f64>,
+    pub points: Vec<HappinessScore>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,6 +100,32 @@ pub struct Decision {
     pub ttl_days: Option<i32>,
     pub expires_at: Option<DateTime<Utc>>,
 }
+
+/// `audit_log` row (iter-loop-20260901 r5). Wire shape returned by
+/// `GET /api/v1/audit`; mirrors the table 1:1 so the migration's CHECK
+/// constraints stay the single source of truth for what an action can be.
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AuditLogEntry {
+    pub id: Uuid,
+    pub who: String,
+    pub action: String,
+    pub target_kind: String,
+    pub target_id: Option<Uuid>,
+    pub family_id: Option<Uuid>,
+    pub ts: DateTime<Utc>,
+    pub metadata: serde_json::Value,
+}
+
+/// Allowed `action` values for `audit_log` — must stay in lockstep with the
+/// CHECK constraint in `20260901000003_audit_log.sql`. Re-exported through a
+/// constant rather than an enum so the value is the same `&str` we send to
+/// the DB (no `as_str()` round-trip at every insert site).
+pub const AUDIT_ACTIONS: &[&str] = &[
+    "decision_created",
+    "decision_status_updated",
+    "decision_shared",
+    "decision_purged",
+];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateDecisionStatusRequest {
