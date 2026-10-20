@@ -68,7 +68,7 @@ impl Config {
                 .to_string(),
             jwt_secret: jwt_secret_owned,
             hamr_app_url: hamr_app_url
-                .unwrap_or("http://hamr-app-api:8081")
+                .unwrap_or("http://hamr-app-api:3002")
                 .to_string(),
         })
     }
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(cfg.port, 8082);
         assert_eq!(cfg.database_url, "postgres://hamr:hamr@localhost:5432/hamr_jiabu");
         assert_eq!(cfg.jwt_secret, "dev-secret");
-        assert_eq!(cfg.hamr_app_url, "http://hamr-app-api:8081");
+        assert_eq!(cfg.hamr_app_url, "http://hamr-app-api:3002");
     }
 
     #[test]

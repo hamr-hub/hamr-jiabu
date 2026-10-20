@@ -235,12 +235,26 @@ pub async fn http_metrics_middleware(req: Request, next: Next) -> Response {
 mod tests {
     use super::*;
 
+    /// 指标注册表是**进程全局**的，而 Rust 的测试 harness 默认并行跑用例。
+    /// 每个用例开头都调用 `reset_for_tests()` 清空注册表，于是并行的另一个
+    /// 用例可能在本用例断言之前把计数器清零 —— 表现为随机失败
+    /// （表现为 `cargo test` 时好时坏，且失败的具体用例每次都不一样）。
+    ///
+    /// 用这把全局锁把本模块的用例串行化，代价可以忽略（用例都是纯内存操作）。
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 取测试锁。必须在 `reset_for_tests()` **之前**获取。
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().expect("metrics test lock poisoned")
+    }
+
     fn label(pairs: &[(&str, &str)]) -> LabelMap {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
     #[test]
     fn counter_inc_creates_series_at_zero_then_increments() {
+        let _guard = test_guard();
         reset_for_tests();
         counter_inc("test_metric_a", label(&[]));
         counter_inc("test_metric_a", label(&[]));
@@ -254,6 +268,7 @@ mod tests {
 
     #[test]
     fn labels_partition_into_separate_series() {
+        let _guard = test_guard();
         reset_for_tests();
         counter_inc("test_metric_b", label(&[("method", "GET")]));
         counter_inc("test_metric_b", label(&[("method", "GET")]));
@@ -279,6 +294,7 @@ mod tests {
 
     #[test]
     fn render_includes_help_and_type_headers() {
+        let _guard = test_guard();
         reset_for_tests();
         counter_inc("http_requests_total", label(&[("path", "/health")]));
         let text = render_prometheus(&snapshot());
@@ -293,6 +309,7 @@ mod tests {
 
     #[test]
     fn render_emits_zero_when_no_samples() {
+        let _guard = test_guard();
         // Discovery matters: Prometheus needs the family header even before
         // any traffic arrives, otherwise first-scrape-after-deploy drops the
         // series silently.
@@ -304,6 +321,7 @@ mod tests {
 
     #[test]
     fn render_handles_label_keys_in_sorted_order() {
+        let _guard = test_guard();
         // Order of label keys must be deterministic for test substring matches
         // and to avoid spurious diffs in dashboards.
         reset_for_tests();
@@ -325,6 +343,7 @@ mod tests {
 
     #[test]
     fn render_escapes_special_chars_in_label_values() {
+        let _guard = test_guard();
         reset_for_tests();
         counter_inc(
             "http_requests_total",
@@ -336,6 +355,7 @@ mod tests {
 
     #[test]
     fn counter_add_with_explicit_delta() {
+        let _guard = test_guard();
         reset_for_tests();
         counter_add("decisions_total", label(&[("action", "created")]), 7);
         counter_add("decisions_total", label(&[("action", "created")]), 3);
@@ -346,6 +366,7 @@ mod tests {
 
     #[test]
     fn reset_clears_all_series() {
+        let _guard = test_guard();
         counter_inc("decisions_total", label(&[("action", "x")]));
         counter_inc("http_requests_total", label(&[("path", "/y")]));
         reset_for_tests();
